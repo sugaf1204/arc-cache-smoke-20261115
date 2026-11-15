@@ -64,3 +64,53 @@ DinD のデータが CRI-O の container overlay 上にある状態だった。
 
 最終確認で controller / listener / BuildKit は Ready、scale set は Running、PVC は Bound。
 ビルドキャッシュの冗長化、ノード喪失時の復旧、実アプリでの性能は未検証。
+
+## 0〜4 台の autoscale と並列キャッシュ (2026-11-15)
+
+`maxRunners: 4` を cilium-cluster に適用した。
+BuildKit は単一 daemon / PVC を維持し、`worker.oci.max-parallelism = 2` を設定。
+runner ごとに独立した DinD とデータ用 emptyDir を使う。
+
+検証 workflow はテスト repo の `.github/workflows/parallel.yaml` / `Dockerfile.parallel`。
+以下の 4 matrix jobs を同時に投入し、[初回](https://github.com/sugaf1204/arc-cache-smoke-20261115/actions/runs/43709069979)、
+[再実行](https://github.com/sugaf1204/arc-cache-smoke-20261115/actions/runs/43709431719)とも全件成功した。
+
+| case | store scope | is-number の期待バージョン |
+| --- | --- | --- |
+| a | shared | 7.0.0 |
+| b | shared | 6.0.0 |
+| c | isolated-c | 7.0.0 |
+| d | isolated-d | 6.0.0 |
+
+scope の実際の prefix は `repo-1458627243-parallel-`、suffix は platform / toolchain。
+scope の異なる cache mount 内で marker が混ざらないことと、同一 scope の同時書き込みがないことを検査した。
+同一の RUN を BuildKit がまとめて処理しないよう case ID / 実行 nonce を RUN に渡し、
+実行キャッシュを使わず mount のロックと pnpm store の再利用を実際に通した。
+nonce は cache mount ID には含めていない。
+
+再実行ログの cache mount 保持区間 (a の開始を 0 秒とした相対時間):
+
+| case | 開始〜終了 (秒) |
+| --- | --- |
+| a | 0.00〜15.12 |
+| b | 15.85〜30.96 |
+| d | 29.99〜45.20 |
+| c | 31.79〜46.91 |
+
+b は a の開始から 0.14 秒後に build を要求していたが、同じ store の mount を使う RUN は
+a の終了後まで開始しなかった。異なる store の c / d は約 13.42 秒重なって実行できた。
+cache 内の atomic mkdir による同時アクセス検査も全件成功した。
+15 秒の保持はロック検証用に加えたもので、実アプリの install 時間ではない。
+再実行の全 4 件が `reused 2, downloaded 0` となった。
+
+runner / DinD の分離と autoscale:
+
+- 0 台から 4 台へ増え、4 ノードに 1 台ずつ Ready になった状態を観測した。
+- 4 件の Docker daemon ID はすべて異なり、同じ `ci:latest` tag / `ci-common` container 名を同時に使えた。
+- 各 build 内で dependency の実バージョンを検査し、DinD の実行出力も a:7.0.0 / b:6.0.0 / c:7.0.0 / d:6.0.0 と一致した。
+- 終了後は runner Pod が 0 台に戻った。
+- 同じ PVC / PV を維持し、変更後 BuildKit Pod の restart count は 0、最終状態は Ready。
+
+実アプリの重いビルドを 4 件同時に処理する容量検証は含まない。
+4 台は CI runner の上限で、BuildKit の重い worker step は同時 2 件まで。
+共有 store の install には排他待ちが発生するが、別 scope の CI を全体で直列化する構成ではない。
