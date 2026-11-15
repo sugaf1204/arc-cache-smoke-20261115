@@ -1,0 +1,23 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+ARG CACHE_SCOPE
+ARG TARGETPLATFORM
+ARG CACHE_TOOLCHAIN=node24-bookworm-pnpm12
+ARG CASE_ID
+ARG RUN_NONCE
+RUN --mount=type=cache,id=${CACHE_SCOPE}-${TARGETPLATFORM}-${CACHE_TOOLCHAIN},target=/var/cache/pnpm,sharing=locked \
+    set -eu; \
+    test -n "$CACHE_SCOPE"; test -n "$RUN_NONCE"; \
+    mkdir /var/cache/pnpm/.ci-active; \
+    trap 'rm -rf /var/cache/pnpm/.ci-active' EXIT; \
+    if test -f /var/cache/pnpm/.scope; then test "$(cat /var/cache/pnpm/.scope)" = "$CACHE_SCOPE"; fi; \
+    printf '%s' "$CACHE_SCOPE" > /var/cache/pnpm/.scope; \
+    echo "CACHE_ENTER case=$CASE_ID scope=$CACHE_SCOPE time=$(date +%s.%N)"; \
+    sleep 15; \
+    pnpm install --frozen-lockfile --store-dir /var/cache/pnpm; \
+    echo "CACHE_EXIT case=$CASE_ID scope=$CACHE_SCOPE time=$(date +%s.%N)"
+COPY . .
+RUN pnpm run build
+CMD ["cat", "dist/result.txt"]

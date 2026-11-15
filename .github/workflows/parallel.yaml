@@ -1,0 +1,79 @@
+name: ARC parallel cache smoke
+run-name: ARC parallel ${{ inputs.label }}
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Test label
+        required: true
+        default: cold
+permissions:
+  contents: read
+  packages: read
+jobs:
+  build:
+    name: parallel-${{ matrix.case }}
+    runs-on: arc-docker
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {case: a, scope: shared, version: '7.0.0'}
+          - {case: b, scope: shared, version: '6.0.0'}
+          - {case: c, scope: isolated-c, version: '7.0.0'}
+          - {case: d, scope: isolated-d, version: '6.0.0'}
+    env:
+      BASE_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/base@sha256:00217ee72d1def4ef9d835d426dec4e92b91ab6ca267270402bb4dc7d739fdc9
+      CASE_ID: ${{ matrix.case }}
+      CACHE_GROUP: ${{ matrix.scope }}
+      EXPECTED_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Record independent runner and Docker daemon
+        run: |
+          echo "RUNNER_POD=$(hostname)"
+          echo "DOCKER_ID=$(docker info --format '{{.ID}}')"
+          node --version
+          pnpm --version
+      - name: Generate independent fixture and lockfile
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+          p.description=`parallel case ${process.env.CASE_ID}`;
+          p.dependencies['is-number']=process.env.EXPECTED_VERSION;
+          fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
+          fs.writeFileSync('src/case.json',JSON.stringify({case:process.env.CASE_ID,version:process.env.EXPECTED_VERSION}));
+          fs.writeFileSync('src/expected.txt',`${process.env.CASE_ID}:${process.env.EXPECTED_VERSION}\n`);
+          fs.writeFileSync('build.mjs',`import fs from 'node:fs';
+          import {createRequire} from 'node:module';
+          const require=createRequire(import.meta.url);
+          const input=JSON.parse(fs.readFileSync('src/case.json','utf8'));
+          const actual=require('is-number/package.json').version;
+          if(actual!==input.version) throw new Error('wrong dependency '+actual);
+          fs.mkdirSync('dist',{recursive:true});
+          fs.writeFileSync('dist/result.txt',input.case+':'+actual+'\\n');
+          `);
+          JS
+          pnpm install --lockfile-only
+      - name: Authenticate GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Parallel build and DinD isolation
+        run: |
+          docker buildx build --builder persistent --progress plain -f Dockerfile.parallel \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg CACHE_SCOPE="repo-${GITHUB_REPOSITORY_ID}-parallel-${CACHE_GROUP}" \
+            --build-arg CASE_ID="$CASE_ID" \
+            --build-arg RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --load -t ci:latest .
+          docker run --rm ci:latest | cmp - src/expected.txt
+          # The same tag/container name is intentionally used by all four jobs.
+          docker run -d --name ci-common --entrypoint sleep ci:latest 120
+          docker exec ci-common cat dist/result.txt | cmp - src/expected.txt
+          echo "DIND_RESULT=$(docker exec ci-common cat dist/result.txt)"
+          sleep 45
+          docker rm -f ci-common >/dev/null
