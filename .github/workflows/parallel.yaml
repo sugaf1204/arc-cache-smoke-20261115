@@ -28,6 +28,7 @@ jobs:
       BASE_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/base@sha256:00217ee72d1def4ef9d835d426dec4e92b91ab6ca267270402bb4dc7d739fdc9
       CASE_ID: ${{ matrix.case }}
       CACHE_GROUP: ${{ matrix.scope }}
+      TEST_LABEL: ${{ inputs.label }}
       EXPECTED_VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -64,12 +65,18 @@ jobs:
         run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Parallel build and DinD isolation
         run: |
+          # First overlap the shared-cache requests; later overlap distinct scopes.
+          if [ "$CACHE_GROUP" != shared ]; then sleep 30; fi
+          echo "BUILD_REQUEST case=$CASE_ID time=$(date +%s.%N)"
           docker buildx build --builder persistent --progress plain -f Dockerfile.parallel \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
             --build-arg CACHE_SCOPE="repo-${GITHUB_REPOSITORY_ID}-parallel-${CACHE_GROUP}" \
             --build-arg CASE_ID="$CASE_ID" \
             --build-arg RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --load -t ci:latest .
+            --load -t ci:latest . 2>&1 | tee /tmp/parallel-build.log
+          if [ "$TEST_LABEL" = warm ]; then
+            grep -q "reused 2, downloaded 0" /tmp/parallel-build.log
+          fi
           docker run --rm ci:latest | cmp - src/expected.txt
           # The same tag/container name is intentionally used by all four jobs.
           docker run -d --name ci-common --entrypoint sleep ci:latest 120

@@ -59,7 +59,7 @@ jobs:
           SECONDS=0
           docker buildx build --builder persistent --progress plain \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
-            --build-arg CACHE_SCOPE="${GITHUB_REPOSITORY//\//-}-validated" \
+            --build-arg CACHE_SCOPE="repo-${GITHUB_REPOSITORY_ID}" \
             --load -t "app:${GITHUB_SHA}" .
           echo "APP_BUILD_SECONDS=$SECONDS"
           docker run --rm "app:${GITHUB_SHA}" | tee /tmp/result.txt
@@ -68,6 +68,6 @@ jobs:
         run: |
           docker build --progress plain \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
-            --build-arg CACHE_SCOPE="${GITHUB_REPOSITORY//\//-}-validated" \
+            --build-arg CACHE_SCOPE="repo-${GITHUB_REPOSITORY_ID}" \
             -t "app-plain:${GITHUB_SHA}" .
           docker run --rm "app-plain:${GITHUB_SHA}" | cmp - src/message.txt
