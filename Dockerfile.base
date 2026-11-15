@@ -1,0 +1,12 @@
+# A reusable build toolchain, independent of application dependency versions.
+ARG NODE_IMAGE=node:24-bookworm-slim
+ARG PNPM_IMAGE=ghcr.io/pnpm/pnpm:12
+FROM ${PNPM_IMAGE} AS pnpm
+FROM ${NODE_IMAGE}
+COPY --from=pnpm /opt/pnpm /opt/pnpm
+RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm \
+    && ln -s /opt/pnpm/pnpx /usr/local/bin/pnpx \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app

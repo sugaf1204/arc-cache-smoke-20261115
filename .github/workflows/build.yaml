@@ -1,0 +1,73 @@
+name: ARC persistent cache smoke
+run-name: ARC ${{ inputs.label }}
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Test case label
+        required: true
+        default: cold
+      publish_toolchains:
+        description: Publish base and custom runner images
+        type: boolean
+        default: false
+      verify_custom:
+        description: Require preinstalled Node and pnpm
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: arc-smoke
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: arc-docker
+    timeout-minutes: 25
+    env:
+      BASE_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/base:node24-pnpm12
+      RUNNER_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/runner:2.338.2-node24-pnpm12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Docker and builder
+        run: |
+          hostname
+          docker info
+          docker buildx inspect persistent
+      - name: Check custom runner toolchain
+        if: inputs.verify_custom
+        run: |
+          node --version
+          pnpm --version
+          test "$(node --version | cut -d. -f1)" = v24
+      - name: Authenticate GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish toolchains
+        if: inputs.publish_toolchains
+        run: |
+          docker buildx build --builder persistent --progress plain -f Dockerfile.base \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --push -t "$BASE_IMAGE" .
+          docker buildx build --builder persistent --progress plain -f Dockerfile.runner \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --push -t "$RUNNER_IMAGE" .
+      - name: Build app and execute it in DinD
+        run: |
+          SECONDS=0
+          docker buildx build --builder persistent --progress plain \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg CACHE_SCOPE="${GITHUB_REPOSITORY//\//-}" \
+            --load -t "app:${GITHUB_SHA}" .
+          echo "APP_BUILD_SECONDS=$SECONDS"
+          docker run --rm "app:${GITHUB_SHA}" | tee /tmp/result.txt
+          cmp /tmp/result.txt src/message.txt
+      - name: Plain docker build also uses remote cache
+        run: |
+          docker build --progress plain \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg CACHE_SCOPE="${GITHUB_REPOSITORY//\//-}" \
+            -t "app-plain:${GITHUB_SHA}" .
+          docker run --rm "app-plain:${GITHUB_SHA}" | cmp - src/message.txt

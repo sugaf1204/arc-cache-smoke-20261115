@@ -1,0 +1,14 @@
+# Optional: build and publish this image before referencing it in values.yaml.
+ARG RUNNER_IMAGE=ghcr.io/actions/actions-runner:2.338.2
+ARG NODE_IMAGE=node:24-bookworm-slim
+ARG PNPM_IMAGE=ghcr.io/pnpm/pnpm:12
+FROM ${NODE_IMAGE} AS node
+FROM ${PNPM_IMAGE} AS pnpm
+FROM ${RUNNER_IMAGE}
+USER root
+COPY --from=node /usr/local/ /usr/local/
+COPY --from=pnpm /opt/pnpm /opt/pnpm
+RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm \
+    && ln -s /opt/pnpm/pnpx /usr/local/bin/pnpx \
+    && node --version && pnpm --version && docker buildx version
+USER runner
