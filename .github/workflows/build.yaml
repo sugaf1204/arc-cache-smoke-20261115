@@ -29,7 +29,7 @@ jobs:
       BASE_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/base:node24-pnpm12
       RUNNER_IMAGE: ghcr.io/sugaf1204/arc-cache-smoke-20261115/runner:2.338.2-node24-pnpm12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Inspect Docker and builder
         run: |
           hostname
